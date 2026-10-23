@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis</title>
+<style>
+:root{--bg:#0b1620;--ink:#e6f0f5;--dim:#7f98a8;--ring:#4cc9f0;--hot:#ffb347}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.5 -apple-system,"SF Pro Text",system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;padding:env(safe-area-inset-top) 24px env(safe-area-inset-bottom);text-align:center}
+.orb{position:relative;width:min(60vw,320px);aspect-ratio:1;border-radius:50%;border:2px solid var(--dim);transition:border-color .3s,box-shadow .3s}
+.orb::before,.orb::after{content:"";position:absolute;border-radius:50%;border:2px solid var(--dim);inset:14%;transition:border-color .3s}
+.orb::after{inset:30%;background:var(--dim);opacity:.25;border:0;transition:background .3s,opacity .3s}
+.orb.on{border-color:var(--ring);box-shadow:0 0 60px #4cc9f044}
+.orb.on::before{border-color:var(--ring);animation:spin 6s linear infinite;border-style:dashed}
+.orb.on::after{background:var(--ring);opacity:.35}
+.orb.awake{border-color:var(--hot);box-shadow:0 0 80px #ffb34755}
+.orb.awake::before{border-color:var(--hot)}
+.orb.awake::after{background:var(--hot);opacity:.6;animation:pulse 1s ease-in-out infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{50%{transform:scale(1.12)}}
+@media (prefers-reduced-motion:reduce){.orb *,.orb::before,.orb::after{animation:none!important}}
+#status{font-size:22px;font-weight:600;margin:0}
+#heard,#said{margin:0;max-width:34ch;min-height:1.5em}
+#heard{color:var(--dim)}
+button{font:inherit;font-weight:600;color:#06202c;background:var(--ring);border:0;border-radius:999px;padding:14px 34px}
+button:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+</style>
+</head>
+<body>
+<div class="orb" id="orb" aria-hidden="true"></div>
+<p id="status">Jarvis ist aus</p>
+<p id="heard"></p>
+<p id="said"></p>
+<button id="go">Jarvis starten</button>
+<script>
+const PLACES={altrich:{n:"Altrich",lat:49.96,lon:6.89},riol:{n:"Riol",lat:49.79,lon:6.78},salmtal:{n:"Salmtal",lat:49.95,lon:6.84},highland:{n:"Highland",lat:34.13,lon:-117.21}};
+const WMO=[[0,"klar"],[2,"leicht bewölkt"],[3,"bedeckt"],[48,"neblig"],[57,"Nieselregen"],[67,"Regen"],[77,"Schnee"],[82,"Regenschauer"],[86,"Schneeschauer"],[99,"Gewitter"]];
+const wmo=c=>(WMO.find(w=>c<=w[0])||[0,"unbekannt"])[1];
+const $=id=>document.getElementById(id);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec,running=false,speaking=false,awakeUntil=0,lock=null;
+
+function setState(s,txt){$("orb").className="orb "+s;$("status").textContent=txt}
+
+function speak(text){
+  $("said").textContent=text;speaking=true;
+  try{rec.abort()}catch(e){}
+  const u=new SpeechSynthesisUtterance(text);u.lang="de-DE";
+  const v=speechSynthesis.getVoices().find(v=>v.lang&&v.lang.startsWith("de"));if(v)u.voice=v;
+  u.onend=u.onerror=()=>{speaking=false;listen()};
+  speechSynthesis.cancel();speechSynthesis.speak(u);
+}
+
+function listen(){
+  if(!running||speaking)return;
+  setState(Date.now()<awakeUntil?"awake":"on",Date.now()<awakeUntil?"Ich höre zu …":"Sag „Jarvis“");
+  try{rec.start()}catch(e){}
+}
+
+async function weather(c){
+  const key=Object.keys(PLACES).find(k=>c.includes(k))||"altrich",p=PLACES[key],morgen=c.includes("morgen");
+  try{
+    const r=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto&forecast_days=2`);
+    const d=await r.json(),i=morgen?1:0,day=d.daily;
+    const span=`zwischen ${Math.round(day.temperature_2m_min[i])} und ${Math.round(day.temperature_2m_max[i])} Grad, Regenwahrscheinlichkeit ${day.precipitation_probability_max[i]} Prozent`;
+    return morgen?`Morgen in ${p.n}: ${wmo(day.weather_code[1])}, ${span}.`
+      :`In ${p.n} sind es jetzt ${Math.round(d.current.temperature_2m)} Grad, ${wmo(d.current.weather_code)}. Heute ${span}.`;
+  }catch(e){return "Ich komme gerade nicht ans Wetter. Prüf die Internetverbindung."}
+}
+
+async function answer(c){
+  setState("on","Moment …");
+  const n=new Date();
+  if(/wetter|regen|temperatur|warm|kalt/.test(c))return speak(await weather(c));
+  if(/uhr|spät|zeit/.test(c))return speak("Es ist "+n.toLocaleTimeString("de-DE",{hour:"numeric",minute:"2-digit"})+" Uhr.");
+  if(/datum|welcher tag|wochentag/.test(c))return speak("Heute ist "+n.toLocaleDateString("de-DE",{weekday:"long",day:"numeric",month:"long"})+".");
+  if(/danke/.test(c))return speak("Gern.");
+  speak("Das kann ich noch nicht. Frag mich nach Wetter, Uhrzeit oder Datum.");
+}
+
+function handle(t){
+  t=t.toLowerCase().trim();$("heard").textContent="„"+t+"“";
+  const wake=/\b(jarvis|jarwis|charvis|dscharvis|tscharvis)\b/;
+  const awake=Date.now()<awakeUntil;
+  if(!awake&&!wake.test(t))return;
+  const cmd=t.replace(wake,"").trim();
+  if(!cmd){awakeUntil=Date.now()+8000;return speak("Ja?")}
+  awakeUntil=0;answer(cmd);
+}
+
+$("go").onclick=async()=>{
+  if(!SR){$("status").textContent="Dieser Browser hat keine Spracherkennung";return}
+  rec=new SR();rec.lang="de-DE";rec.continuous=true;rec.interimResults=false;
+  rec.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)handle(e.results[i][0].transcript)};
+  rec.onend=()=>{if(running&&!speaking)setTimeout(listen,300)};
+  rec.onerror=e=>{if(e.error==="not-allowed"||e.error==="service-not-allowed"){running=false;setState("","Mikrofon nicht erlaubt. Erlaube es in den Safari-Einstellungen für diese Seite.");$("go").hidden=false}};
+  running=true;$("go").hidden=true;
+  try{lock=await navigator.wakeLock.request("screen")}catch(e){}
+  speechSynthesis.getVoices();
+  speak("Jarvis ist bereit.");
+};
+document.addEventListener("visibilitychange",async()=>{if(running&&!document.hidden){try{lock=await navigator.wakeLock.request("screen")}catch(e){}listen()}});
+</script>
+</body>
+</html>
